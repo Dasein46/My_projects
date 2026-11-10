@@ -1,43 +1,47 @@
-# Модель классификации частей тела на снимках
-___
-##### сылка на датасет 💿
-https://www.kaggle.com/datasets/chenghanpu/brain-tumor-mri-and-ct-scan
-https://www.kaggle.com/datasets/mateuszbuda/lgg-mri-segmentation
-https://www.kaggle.com/datasets/mohamedhanyyy/chest-ctscan-images
-https://www.kaggle.com/code/polomarco/chest-ct-segmentation-lung-heart-trachea
-https://www.kaggle.com/datasets/dryari5/shoulder-xray-classification
-https://www.kaggle.com/datasets/antonbudnychuk/hand-xray
-https://www.kaggle.com/datasets/shashwatwork/knee-osteoarthritis-dataset-with-severity
-##### сылка на модели 💿
-https://drive.google.com/file/d/12hZFqfQVril3FjR6ZByHKGZ8ERM4s31X/view?usp=drive_link
-##### dict обозначение данных на вход 🔽
-- https://drive.google.com/drive/folders/1VJjYoUftSS_p2OlujqIhNgldi5Bpsv7k?usp=drive_link: путь до изображения снимка плеча x-ray;
-- https://drive.google.com/drive/folders/13JMCGEmC98prbBTb2lsa9M_k-E6j5bP4?usp=drive_link: путь до изображения снимка колена x-ray;
-- https://drive.google.com/drive/folders/1ZZvih-UTAk9p3OYVxbnhDitJiK24jVJZ?usp=drive_link: путь до изображения снимка головы x-ray;
-- https://drive.google.com/drive/folders/1Ruy3-7buJl6L6sbsio-IHLInRS_zlg-Y?usp=drive_link: путь до изображения снимка руки x-ray;
-- https://drive.google.com/drive/folders/1_nm-WVvAazAIPLKe3gRa8R3BG_XMOnuz?usp=drive_link: путь до изображения снимка грудной клетки x-ray.
+# Классификация областей тела на рентгеновских снимках
 
-##### dict обозначение данных на выход 🔼
-- Filename: Predictions
+[← Обзор проектов Computer Vision](../README.md)
 
-##### образец данных на вход и выход 🔃
-* вход: [матрица изображения RGB] | shape : (5709, 128, 128, 3)
-* выход: [[0.20, 0.70, 0.02, 0.05, 0.03]] | shape : (5709, 3)
+## Задача
 
-##### метрики 📈
+Обучить свёрточную нейросеть определять, к какой области тела относится рентгеновское изображение: **head, chest, hand, shoulder, knee** (пять классов). Это классификация области съёмки, а **не выявление заболеваний**.
 
-- acc : 0.9894. порог: 0.6455790400505066. модель: нейронная модель с 7 слоями.
+**Ноутбук:** [Classification_of_body_parts_in_X_Rays.ipynb](Classification_of_body_parts_in_X_Rays.ipynb).
 
-##### матрица ошибок 🔢
-| TP | FN |
-|------|------|
-| FP | TN |
+## Технологии и подход
 
-##### Значение фаилов 📄
-* classification_of_body_parts_in_X_Rays.ipynb : создание модели
-* my_model.h5 : модель классификации
+- Python, TensorFlow/Keras, pandas, NumPy, Matplotlib.
+- Объединение изображений пяти классов и подготовка меток.
+- `ImageDataGenerator`: изменение размера до **224 × 224**, нормализация и разделение на обучающую/валидационную выборки (80/20).
+- CNN с двумя свёрточными блоками, обученная в течение **трёх эпох**.
 
+## Метрики из сохранённого ноутбука
 
-___
-### Заметки ✏️
-ваши коментарии
+| Показатель | Значение |
+| --- | ---: |
+| Всего валидных изображений | 5 709 |
+| Обучающая выборка | 4 568 |
+| Валидационная выборка | 1 141 |
+| Число классов | 5 |
+| Validation accuracy, последняя эпоха | **98,94%** |
+| Validation loss, последняя эпоха | 0,0464 |
+
+Это **validation accuracy в условиях сохранённого эксперимента**, а не подтверждённая точность на независимой тестовой выборке. Методика разбиения по пациентам отдельно не проверена. Пример прогноза по отдельной тестовой папке в ноутбуке не заменяет полноценного независимого теста.
+
+## Источники и воспроизводимость
+
+В исследовании использовались изображения из нескольких открытых наборов; перечень исходных ссылок:
+
+- [Shoulder X-Ray Classification](https://www.kaggle.com/datasets/dryari5/shoulder-xray-classification)
+- [Hand X-Ray](https://www.kaggle.com/datasets/antonbudnychuk/hand-xray)
+- [Knee Osteoarthritis](https://www.kaggle.com/datasets/shashwatwork/knee-osteoarthritis-dataset-with-severity)
+
+Другие источники и способ их объединения указаны в ноутбуке. Источники данных требуют проверки лицензий и условий использования.
+
+Ноутбук использует абсолютные пути `/content/drive/MyDrive/datasets/body_parts/` в Google Colab. Для повторения требуется подготовить данные и адаптировать пути; веса и изображения не входят в репозиторий.
+
+[Сохранённая ссылка на модель](https://drive.google.com/file/d/12hZFqfQVril3FjR6ZByHKGZ8ERM4s31X/view?usp=drive_link) — доступность ссылки не проверена.
+
+## Ограничения
+
+Не предназначено для клинического применения. До потенциального использования в реальных задачах нужны независимая валидация, оценка precision/recall/F1 по классам, проверка устойчивости к смене источников данных и исключение утечки данных между подвыборками.
