@@ -1,43 +1,40 @@
-# Модель классификации частей тела на снимках
-___
-##### сылка на датасет 💿
-https://www.kaggle.com/datasets/chenghanpu/brain-tumor-mri-and-ct-scan
-https://www.kaggle.com/datasets/mateuszbuda/lgg-mri-segmentation
-https://www.kaggle.com/datasets/mohamedhanyyy/chest-ctscan-images
-https://www.kaggle.com/code/polomarco/chest-ct-segmentation-lung-heart-trachea
-https://www.kaggle.com/datasets/dryari5/shoulder-xray-classification
-https://www.kaggle.com/datasets/antonbudnychuk/hand-xray
-https://www.kaggle.com/datasets/shashwatwork/knee-osteoarthritis-dataset-with-severity
-##### сылка на модели 💿
-https://drive.google.com/file/d/1CRiFZTfKanN6YyVsimc2zvOQNzUWCoIR/view?usp=drive_link
-##### dict обозначение данных на вход 🔽
-- https://drive.google.com/drive/folders/1VJjYoUftSS_p2OlujqIhNgldi5Bpsv7k?usp=drive_link: путь до изображения снимка плеча x-ray;
-- https://drive.google.com/drive/folders/13JMCGEmC98prbBTb2lsa9M_k-E6j5bP4?usp=drive_link: путь до изображения снимка колена x-ray;
-- https://drive.google.com/drive/folders/1ZZvih-UTAk9p3OYVxbnhDitJiK24jVJZ?usp=drive_link: путь до изображения снимка головы x-ray;
-- https://drive.google.com/drive/folders/1Ruy3-7buJl6L6sbsio-IHLInRS_zlg-Y?usp=drive_link: путь до изображения снимка руки x-ray;
-- https://drive.google.com/drive/folders/1_nm-WVvAazAIPLKe3gRa8R3BG_XMOnuz?usp=drive_link: путь до изображения снимка грудной клетки x-ray.
+# Классификация анатомических областей на МРТ
 
-##### dict обозначение данных на выход 🔼
-- Filename: Predictions
+[← Обзор проектов Computer Vision](../README.md)
 
-##### образец данных на вход и выход 🔃
-* вход: [матрица изображения RGB] | shape : (5709, 128, 128, 3)
-* выход: [[0.20, 0.70, 0.02, 0.05, 0.03]] | shape : (5709, 3)
+## Задача
 
-##### метрики 📈
+Исследовательский прототип для классификации изображений МРТ по **четырём классам**: `brain`, `heart`, `lumbar_spine`, `prostate`. Это задача классификации типа изображения, **не** диагностика патологий.
 
-- acc : 0.9894. порог: 0.6455790400505066. модель: нейронная модель с 7 слоями.
+**Ноутбук:** [Classification_of_organs_in_MRI.ipynb](Classification_of_organs_in_MRI.ipynb).
 
-##### матрица ошибок 🔢
-| TP | FN |
-|------|------|
-| FP | TN |
+## Технологии и метод
 
-##### Значение фаилов 📄
-* classification_of_body_parts_in_X_Rays.ipynb : создание модели
-* my_model.h5 : модель классификации
+- Python, TensorFlow/Keras, pandas, NumPy, PIL, OpenCV, Matplotlib.
+- Подготовка изображений: конвертация в JPEG и изменение размера до **224 × 224**.
+- Аугментация: повороты, сдвиги, масштабирование, изменение яркости; нормализация пикселей.
+- CNN с двумя свёрточными блоками, обученная на данных эксперимента.
+- Разделение с помощью `ImageDataGenerator(validation_split=0.2)`.
 
+## Результаты сохранённого запуска
 
-___
-### Заметки ✏️
-ваши коментарии
+| Показатель | Значение |
+| --- | ---: |
+| Обучающие изображения | 3 329 |
+| Валидационные изображения | 830 |
+| Количество классов | 4 |
+| Эпох обучения | 3 |
+| Последняя validation accuracy | **98,12%** |
+| Последняя validation loss | 0,0646 |
+
+Значения взяты из сохранённого вывода обучения в ноутбуке, **не являются независимым тестированием на внешних данных**. Репрезентативность и отсутствие пересечения пациентов между подвыборками не подтверждены.
+
+## Воспроизведение
+
+Ноутбук рассчитан на **Google Colab** и использует абсолютные пути вида `/content/drive/MyDrive/MRI/`. Для повторения потребуется самостоятельно получить разрешённые к использованию изображения, организовать папки по классам и адаптировать пути. Датасеты и веса модели в этом репозитории не опубликованы; совместимость окружения не гарантируется.
+
+[Сохранённая ссылка на модель](https://drive.google.com/file/d/1CRiFZTfKanN6YyVsimc2zvOQNzUWCoIR/view?usp=drive_link) — доступность ссылки не проверена.
+
+## Ограничения
+
+Это исторический учебный эксперимент, а не медицинская система. Высокая валидационная accuracy сама по себе не показывает качество на новых пациентах, других устройствах и больницах. Для такой оценки нужны независимый пациент-ориентированный тест, метрики по классам и анализ ошибок.
