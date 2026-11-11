@@ -1,0 +1,15 @@
+__pycache__/
+.pytest_cache/
+.ipynb_checkpoints/
+.venv/
+.env
+.env.*
+!.env.example
+data/
+results/
+artifacts/
+*.keras
+*.h5
+*.pt
+*.pth
+*.pkl
