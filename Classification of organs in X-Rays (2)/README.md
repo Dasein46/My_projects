@@ -45,4 +45,4 @@ weighted=0,889908, accuracy_multi=0,990334. Это исторические ре
 Test оценивайте только после выбора гиперпараметров. Сохраняются split_manifest.csv,
 model.pkl, classes.json и test_metrics.json. Загружайте лишь доверенные fastai/pickle-файлы.
 
-[Аудит](../AUDIT.md) · [Проверки](../VALIDATION.md).
+[Методология](../METHODOLOGY.md) · [Проверки](../VALIDATION.md).
