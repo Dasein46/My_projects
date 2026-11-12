@@ -9,7 +9,9 @@
 
 - https://www.kaggle.com/datasets/vishwaskant786/2d-fetal-altrasound-images
 
-Без MANIFEST_PATH ноутбук читает image_label.csv и images/, извлекая PatientNNNNN из Image_name. Формат подтверждается примерами исходного CSV, но его семантику и официальный split нужно сверить с источником.
+По умолчанию читается DATA_ROOT/manifest.csv; MANIFEST_PATH задаёт другой путь.
+Для исходного image_label.csv и images/ требуется ALLOW_FILENAME_PATIENT_IDS=1:
+сначала подтвердите, что PatientNNNNN обозначает пациента, и проверьте официальный split.
 
 ## Модель и метод
 

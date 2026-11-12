@@ -18,7 +18,10 @@
 
 Python, PyTorch, fastai, pandas, scikit-learn. ResNet50 ImageNet, Resize(224),
 обучающие аугментации fastai, MultiCategoryBlock и BCEWithLogitsLoss.
-Learning rate finder использует train; лучшая эпоха выбирается по validation loss.
+Learning rate finder использует train; лучшая эпоха выбирается по validation loss
+среди обеих стадий fine_tune. Все строки train сохраняются; размер батча корректируется
+для исключения singleton-batch в BatchNorm. Фактический размер dls.train.bs на малых
+выборках может превышать запрошенный. Нужны минимум два обучающих изображения.
 Групповое разделение примерно 60/20/20, seed=12345; официальный split сохраняется.
 Проверяются пути, метки, пациентское пересечение и точные пиксельные дубли.
 
