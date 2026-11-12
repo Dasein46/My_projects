@@ -4,14 +4,18 @@ Example:
   python train.py --data-dir /path/to/images --epochs 20 --output-dir results
 
 Expected files: <city>_summer.jpg and <city>_winter.jpg.
-Cities are split before tiles are generated to prevent location leakage.
+Cities are split before tiles are generated. Verify spatial separation and
+co-registration independently; distinct names do not prove distinct locations.
 """
 from __future__ import annotations
 
 import argparse
 import json
 import random
-from dataclasses import asdict, dataclass
+import os
+from dataclasses import dataclass
+import hashlib
+import platform
 from pathlib import Path
 
 import numpy as np
@@ -45,22 +49,42 @@ def pair_cities(data_dir: Path) -> dict[str, tuple[Path, Path]]:
         raise ValueError(f"Missing seasonal counterpart for cities: {missing}")
     for city in sorted(set(summers) & set(winters)):
         pairs[city] = (summers[city], winters[city])
-    if len(pairs) < 2:
-        raise ValueError("At least two paired cities are needed for a city-level split.")
+    if len(pairs) < 3:
+        raise ValueError("At least three paired cities are required for train/validation/test.")
     return pairs
 
 
-def split_cities(
-    pairs: dict[str, tuple[Path, Path]], val_fraction: float, seed: int
-) -> tuple[dict[str, tuple[Path, Path]], dict[str, tuple[Path, Path]]]:
-    if not 0 < val_fraction < 1:
-        raise ValueError("--val-fraction must be between 0 and 1.")
+def split_cities(pairs, val_fraction, seed, test_fraction=0.2):
+    if not 0 < val_fraction < 1 or not 0 < test_fraction < 1 or val_fraction + test_fraction >= 1:
+        raise ValueError("Validation and test fractions must be positive and sum to < 1.")
+    if len(pairs) < 3:
+        raise ValueError("At least three paired cities are required.")
     cities = sorted(pairs)
     random.Random(seed).shuffle(cities)
-    count = max(1, min(len(cities) - 1, round(len(cities) * val_fraction)))
-    val = set(cities[:count])
-    return ({c: pairs[c] for c in cities if c not in val},
-            {c: pairs[c] for c in cities if c in val})
+    n_test = max(1, round(len(cities) * test_fraction))
+    n_val = max(1, round(len(cities) * val_fraction))
+    if n_test + n_val >= len(cities):
+        raise ValueError("Split leaves no training cities; adjust fractions or add cities.")
+    test, val = set(cities[:n_test]), set(cities[n_test:n_test + n_val])
+    return ({c: pairs[c] for c in cities if c not in test | val},
+            {c: pairs[c] for c in cities if c in val},
+            {c: pairs[c] for c in cities if c in test})
+
+
+def validate_distinct_cities(pairs):
+    """Reject exact decoded duplicates across cities; not a near-duplicate check."""
+    seen = {}
+    fingerprints = {}
+    for city, paths in pairs.items():
+        for path in paths:
+            with Image.open(path) as image:
+                image = image.convert("RGB")
+                digest = hashlib.sha256(str(image.size).encode() + image.tobytes()).hexdigest()
+            if digest in seen and seen[digest] != city:
+                raise ValueError("Identical image pixels assigned to different cities.")
+            seen[digest] = city
+            fingerprints[path.name] = digest
+    return fingerprints
 
 
 def build_tiles(pairs: dict[str, tuple[Path, Path]], rows: int, cols: int) -> list[Tile]:
@@ -106,6 +130,8 @@ class SeasonalTiles(Dataset):
 class SeasonalTranslator(nn.Module):
     def __init__(self, pretrained: bool = False):
         super().__init__()
+        self.register_buffer("mean", torch.tensor([.485, .456, .406]).view(1, 3, 1, 1))
+        self.register_buffer("std", torch.tensor([.229, .224, .225]).view(1, 3, 1, 1))
         self.unet = smp.Unet(
             encoder_name="resnet34",
             encoder_weights="imagenet" if pretrained else None,
@@ -113,7 +139,7 @@ class SeasonalTranslator(nn.Module):
         )
 
     def forward(self, images: torch.Tensor) -> torch.Tensor:
-        return self.unet(images).sigmoid()
+        return self.unet((images - self.mean) / self.std).sigmoid()
 
 
 @torch.no_grad()
@@ -126,9 +152,14 @@ def evaluate(
     pixel_count = 0
     for summer, winter in loader:
         prediction = model(summer.to(device))
-        delta = prediction - winter.to(device)
-        sum_abs += delta.abs().sum().item()
-        sum_sq += delta.square().sum().item()
+        target = winter.to(device)
+        if prediction.shape != target.shape or not torch.isfinite(prediction).all() or not torch.isfinite(target).all():
+            raise ValueError("Prediction and target must have equal shapes and finite pixels.")
+        if ((prediction < 0) | (prediction > 1)).any() or ((target < 0) | (target > 1)).any():
+            raise ValueError("Metrics require RGB pixels in [0, 1].")
+        delta = prediction - target
+        sum_abs += delta.abs().sum(dtype=torch.float64).item()
+        sum_sq += delta.double().square().sum().item()
         pixel_count += delta.numel()
     if not pixel_count:
         raise ValueError("Empty validation loader.")
@@ -140,12 +171,46 @@ def save_example(model: nn.Module, dataset: SeasonalTiles, device: torch.device,
     model.eval()
     summer, winter = dataset[0]
     prediction = model(summer.unsqueeze(0).to(device)).cpu().squeeze(0)
-    # Three frames: input summer / true winter / generated winter.
+    # Three frames: input season / target season / predicted target.
     panel = torch.cat((summer, winter, prediction), dim=2).clamp(0, 1)
     TF.to_pil_image(panel).save(output)
 
 
-def main() -> None:
+def evaluate_checkpoint(data_dir: Path, run_dir: Path):
+    """Evaluate saved weights and split without training or downloading weights."""
+    output = run_dir / "test_metrics.json"
+    report = json.loads((run_dir / "metrics.json").read_text())
+    if output.exists() or report.get("test") is not None:
+        raise ValueError("This run already has test results.")
+    config = json.loads((run_dir / "config.json").read_text())
+    split = json.loads((run_dir / "split.json").read_text())
+    expected = json.loads((run_dir / "data_fingerprints.json").read_text())
+    pairs = pair_cities(data_dir)
+    if validate_distinct_cities(pairs) != expected:
+        raise ValueError("Dataset pixels or filenames differ from the training run.")
+    groups = [set(split[key]) for key in ("train", "validation", "test")]
+    if any(not group for group in groups) or set.union(*groups) != set(pairs) or sum(map(len, groups)) != len(pairs):
+        raise ValueError("Saved city split is incomplete or overlapping.")
+    if config["direction"] == "winter-to-summer":
+        pairs = {city: (winter, summer) for city, (summer, winter) in pairs.items()}
+    test_pairs = {city: pairs[city] for city in split["test"]}
+    data = SeasonalTiles(build_tiles(test_pairs, config["rows"], config["cols"]), config["image_size"])
+    loader = DataLoader(data, batch_size=config["batch_size"], shuffle=False, num_workers=0)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    checkpoint = torch.load(run_dir / "best_model.pt", map_location=device, weights_only=True)
+    if checkpoint["config"] != config:
+        raise ValueError("Checkpoint and configuration do not match.")
+    model = SeasonalTranslator(pretrained=False).to(device)
+    model.load_state_dict(checkpoint["state_dict"])
+    mae, mse = evaluate(model, loader, device)
+    base_mae, base_mse = evaluate(nn.Identity().to(device), loader, device)
+    result = {"mae": mae, "mse": mse, "identity_mae": base_mae, "identity_mse": base_mse,
+              "cities": split["test"], "tiles": len(data), "checkpoint_epoch": checkpoint["metrics"]["epoch"]}
+    output.write_text(json.dumps(result, indent=2, allow_nan=False))
+    return result
+
+
+def main(argv=None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data-dir", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, default=Path("results"))
@@ -158,10 +223,21 @@ def main() -> None:
     parser.add_argument("--val-fraction", type=float, default=0.2)
     parser.add_argument("--seed", type=int, default=66)
     parser.add_argument("--pretrained", action="store_true", help="Download ImageNet encoder weights")
-    args = parser.parse_args()
+    parser.add_argument("--test-fraction", type=float, default=.2)
+    parser.add_argument("--direction", choices=["summer-to-winter", "winter-to-summer"], default="summer-to-winter")
+    parser.add_argument("--evaluate-test", action="store_true", help="Evaluate held-out cities only after fixing the experiment design")
+    parser.add_argument("--evaluate-only", action="store_true", help="Evaluate best_model.pt using the saved configuration and city split")
+    args = parser.parse_args(argv)
+    os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+    if args.evaluate_only:
+        torch.use_deterministic_algorithms(True)
+        evaluate_checkpoint(args.data_dir, args.output_dir)
+        return
 
-    if args.epochs < 1 or args.batch_size < 1 or args.image_size < 32:
-        parser.error("epochs and batch-size must be positive, image-size must be >= 32")
+    if args.epochs < 1 or args.batch_size < 1 or args.image_size < 64 or args.image_size % 32 or not np.isfinite(args.lr) or args.lr <= 0:
+        parser.error("epochs and batch-size must be positive, image-size must be a multiple of 32 and >= 64; lr must be positive")
+    if args.output_dir.exists() and any(args.output_dir.iterdir()):
+        parser.error("Use a new output directory to avoid mixing experiments.")
     args.output_dir.mkdir(parents=True, exist_ok=True)
     random.seed(args.seed)
     np.random.seed(args.seed)
@@ -169,8 +245,23 @@ def main() -> None:
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(args.seed)
 
+    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.deterministic = True
+    torch.use_deterministic_algorithms(True)
     pairs = pair_cities(args.data_dir)
-    train_pairs, val_pairs = split_cities(pairs, args.val_fraction, args.seed)
+    fingerprints = validate_distinct_cities(pairs)
+    # Reject malformed held-out pairs before training.
+    build_tiles(pairs, args.rows, args.cols)
+    if args.direction == "winter-to-summer":
+        pairs = {c: (winter, summer) for c, (summer, winter) in pairs.items()}
+    train_pairs, val_pairs, test_pairs = split_cities(pairs, args.val_fraction, args.seed, args.test_fraction)
+    config = {k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()}
+    split_report = {"train": sorted(train_pairs), "validation": sorted(val_pairs), "test": sorted(test_pairs)}
+    (args.output_dir / "config.json").write_text(json.dumps(config, indent=2))
+    (args.output_dir / "split.json").write_text(json.dumps(split_report, indent=2))
+    (args.output_dir / "data_fingerprints.json").write_text(json.dumps(fingerprints, indent=2))
+    environment = {"python": platform.python_version(), "torch": torch.__version__, "numpy": np.__version__, "smp": smp.__version__}
+    (args.output_dir / "environment.json").write_text(json.dumps(environment, indent=2))
     train_data = SeasonalTiles(build_tiles(train_pairs, args.rows, args.cols), args.image_size)
     val_data = SeasonalTiles(build_tiles(val_pairs, args.rows, args.cols), args.image_size)
     train_loader = DataLoader(train_data, batch_size=args.batch_size, shuffle=True, num_workers=0)
@@ -178,9 +269,9 @@ def main() -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = SeasonalTranslator(pretrained=args.pretrained).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
-    criterion = nn.L1Loss()
+    criterion = nn.MSELoss()  # Preserve the original paired regression objective.
     history: list[dict] = []
-    best_mae = float("inf")
+    best_mse = float("inf")
 
     print(f"Training cities: {sorted(train_pairs)}; validation cities: {sorted(val_pairs)}")
     print(f"Training tiles: {len(train_data)}; validation tiles: {len(val_data)}; device: {device}")
@@ -194,28 +285,42 @@ def main() -> None:
             optimizer.zero_grad(set_to_none=True)
             prediction = model(summer)
             loss = criterion(prediction, winter)
+            if not torch.isfinite(loss):
+                raise ValueError("Non-finite training loss.")
             loss.backward()
             optimizer.step()
             loss_sum += loss.item() * summer.size(0)
             samples += summer.size(0)
         val_mae, val_mse = evaluate(model, val_loader, device)
-        metrics = {"epoch": epoch, "train_mae": loss_sum / samples,
+        metrics = {"epoch": epoch, "train_mse": loss_sum / samples,
                    "val_mae": val_mae, "val_mse": val_mse}
         history.append(metrics)
         print(json.dumps(metrics, ensure_ascii=False))
-        if val_mae < best_mae:
-            best_mae = val_mae
+        if val_mse < best_mse:
+            best_mse = val_mse
             torch.save({"state_dict": model.state_dict(), "metrics": metrics,
-                        "model": "Unet/resnet34", "config": vars(args)},
+                        "model": "Unet/resnet34", "config": config},
                        args.output_dir / "best_model.pt")
             save_example(model, val_data, device, args.output_dir / "validation_example.png")
 
-    report = {"train_cities": sorted(train_pairs), "validation_cities": sorted(val_pairs),
+    # Identity baseline: copying the input season without learning.
+    identity_mae, identity_mse = evaluate(nn.Identity().to(device), val_loader, device)
+    test_metrics = None
+    if args.evaluate_test:
+        checkpoint = torch.load(args.output_dir / "best_model.pt", map_location=device, weights_only=True)
+        model.load_state_dict(checkpoint["state_dict"])
+        test_data = SeasonalTiles(build_tiles(test_pairs, args.rows, args.cols), args.image_size)
+        test_loader = DataLoader(test_data, batch_size=args.batch_size, shuffle=False)
+        mae, mse = evaluate(model, test_loader, device)
+        base_mae, base_mse = evaluate(nn.Identity().to(device), test_loader, device)
+        test_metrics = {"mae": mae, "mse": mse, "identity_mae": base_mae, "identity_mse": base_mse}
+    report = {"validation_identity_mae": identity_mae, "validation_identity_mse": identity_mse,
+              "test": test_metrics,"train_cities": sorted(train_pairs), "validation_cities": sorted(val_pairs),
               "train_tiles": len(train_data), "validation_tiles": len(val_data),
-              "history": history, "best_val_mae": best_mae,
-              "note": "MAE/MSE computed on paired winter targets from held-out cities; not a perceptual metric."}
+              "history": history, "best_val_mse": best_mse, "test_cities": sorted(test_pairs),
+              "note": "MAE/MSE computed on paired target-season images from held-out cities; not a perceptual metric."}
     (args.output_dir / "metrics.json").write_text(
-        json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
+        json.dumps(report, ensure_ascii=False, indent=2, allow_nan=False), encoding="utf-8"
     )
 
 

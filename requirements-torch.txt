@@ -1,0 +1,5 @@
+-r requirements-core.txt
+torch==2.5.1
+torchvision==0.20.1
+segmentation-models-pytorch==0.3.4
+fastai==2.7.18

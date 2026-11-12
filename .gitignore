@@ -1,0 +1,21 @@
+__pycache__/
+.pytest_cache/
+.ipynb_checkpoints/
+.venv/
+.env
+.env.*
+!.env.example
+data/
+results/
+artifacts/
+*.keras
+*.h5
+*.pt
+*.pth
+*.pkl
+
+# Local medical metadata
+manifest.csv
+split_manifest.csv
+train_df.csv
+image_label.csv
