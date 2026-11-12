@@ -83,3 +83,37 @@ def test_cli_training_checkpoint_and_test(tmp_path):
     assert np.isfinite(report['test']['mse'])
     assert (output/'best_model.pt').exists()
     assert Image.open(output/'validation_example.png').size==(192,64)
+
+
+@pytest.mark.parametrize('bad',['nan','shape','range'])
+def test_invalid_output_rejected(bad):
+    class Invalid(nn.Module):
+        def forward(self,x):
+            if bad=='nan':return x*float('nan')
+            if bad=='shape':return x[:,:1]
+            return x+2
+    x=torch.zeros(2,3,4,4)
+    with pytest.raises(ValueError):sat.evaluate(Invalid(),DataLoader(TensorDataset(x,x)),torch.device('cpu'))
+
+
+def test_saved_checkpoint_evaluation_and_data_integrity(tmp_path):
+    import json,shutil
+    data=tmp_path/'data';data.mkdir();make_pairs(data);out=tmp_path/'run'
+    sat.main(['--data-dir',str(data),'--output-dir',str(out),'--epochs','1','--rows','1','--cols','1','--image-size','64','--batch-size','2','--direction','winter-to-summer'])
+    checkpoint=(out/'best_model.pt').read_bytes()
+    sat.main(['--data-dir',str(data),'--output-dir',str(out),'--evaluate-only'])
+    assert np.isfinite(json.loads((out/'test_metrics.json').read_text())['mse'])
+    assert (out/'best_model.pt').read_bytes()==checkpoint
+    with pytest.raises(ValueError,match='already'):sat.evaluate_checkpoint(data,out)
+    copied=tmp_path/'copy';shutil.copytree(out,copied);(copied/'test_metrics.json').unlink()
+    Image.new('RGB',(101,79),(200,200,200)).save(data/'city_0_winter.jpg')
+    with pytest.raises(ValueError,match='differ'):sat.evaluate_checkpoint(data,copied)
+
+
+def test_bad_test_pair_fails_before_model(tmp_path,monkeypatch):
+    data=tmp_path/'data';data.mkdir();pairs=make_pairs(data)
+    _,_,test=sat.split_cities(pairs,.2,66)
+    Image.new('RGB',(15,12),(200,180,170)).save(next(iter(test.values()))[1])
+    def forbidden(*a,**kw):pytest.fail('Model created before pair validation')
+    monkeypatch.setattr(sat,'SeasonalTranslator',forbidden)
+    with pytest.raises(ValueError,match='sizes'):sat.main(['--data-dir',str(data),'--output-dir',str(tmp_path/'run')])

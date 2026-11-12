@@ -10,6 +10,32 @@ from PIL import Image
 from sklearn.model_selection import GroupShuffleSplit
 
 
+def read_rgb(path):
+    """Use the same image format policy for preparation and inference."""
+    with Image.open(path) as image:
+        if getattr(image, 'n_frames', 1) != 1:
+            raise ValueError('Multi-frame images require an explicit frame policy.')
+        if image.mode not in {'RGB', 'RGBA', 'L', 'P', '1'}:
+            raise ValueError(f'Explicit intensity conversion required for mode {image.mode}.')
+        return image.convert('RGB')
+
+
+def create_run_directory(path):
+    path = Path(path).resolve()
+    if path.exists() and (not path.is_dir() or any(path.iterdir())):
+        raise ValueError('Choose a new, empty OUTPUT_DIR for each experiment.')
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def save_split_manifest(parts, root, output):
+    """Keep portable paths and local patient identifiers with pixel fingerprints."""
+    frame = pd.concat(parts.values()).copy()
+    frame['filename'] = frame['filename'].map(
+        lambda value: Path(value).resolve().relative_to(Path(root).resolve()).as_posix())
+    frame.to_csv(output, index=False)
+
+
 def validate_images(frame: pd.DataFrame, root: Path) -> pd.DataFrame:
     """Resolve paths and reject repeated files/pixels before any split.
 
@@ -25,18 +51,14 @@ def validate_images(frame: pd.DataFrame, root: Path) -> pd.DataFrame:
         path = (root / str(value)).resolve()
         if not path.is_relative_to(root) or not path.is_file():
             raise ValueError('Image must exist within the configured data root.')
-        with Image.open(path) as img:
-            if getattr(img, 'n_frames', 1) != 1:
-                raise ValueError('Multi-frame images require an explicit frame policy.')
-            # Do not silently clip medical 16-bit / floating point intensities.
-            if img.mode not in {'RGB', 'RGBA', 'L', 'P', '1'}:
-                raise ValueError(f'Explicit intensity conversion required for mode {img.mode}.')
-            rgb = img.convert('RGB')
-            digest = hashlib.sha256(str(rgb.size).encode() + rgb.tobytes()).hexdigest()
+        rgb = read_rgb(path)
+        digest = hashlib.sha256(str(rgb.size).encode() + rgb.tobytes()).hexdigest()
         paths.append(str(path))
         hashes.append(digest)
     if len(set(paths)) != len(paths) or len(set(hashes)) != len(hashes):
         raise ValueError('Repeated image/path detected; resolve duplicates and labels first.')
+    if 'pixel_sha256' in frame and frame['pixel_sha256'].tolist() != hashes:
+        raise ValueError('Image pixels differ from the saved manifest.')
     frame['filename'], frame['pixel_sha256'] = paths, hashes
     return frame
 
@@ -94,7 +116,8 @@ def keras_generators(parts, classes, batch_size=16, vgg=False, augment=None, see
     kwargs = {'preprocessing_function': preprocess_input} if vgg else {'rescale': 1 / 255.}
     result = {}
     for split, frame in parts.items():
-        generator = ImageDataGenerator(**kwargs, **(augment or {} if split == 'train' else {}))
+        augmentation = (augment or {}) if split == 'train' else {}
+        generator = ImageDataGenerator(**kwargs, **augmentation)
         result[split] = generator.flow_from_dataframe(
             frame, x_col='filename', y_col='label', classes=classes,
             target_size=(224, 224), color_mode='rgb', class_mode='categorical',
@@ -111,7 +134,10 @@ def evaluate_classifier(model, generator):
         raise ValueError('Evaluation generator must use shuffle=False.')
     generator.reset()
     probabilities = model.predict(generator, verbose=0)
-    if len(probabilities) != generator.n or not np.isfinite(probabilities).all():
+    if (probabilities.shape != (generator.n, len(generator.class_indices))
+            or not np.isfinite(probabilities).all()
+            or np.any((probabilities < 0) | (probabilities > 1))
+            or not np.allclose(probabilities.sum(axis=1), 1, atol=1e-5)):
         raise ValueError('Invalid prediction count or non-finite probabilities.')
     labels = list(range(len(generator.class_indices)))
     names = sorted(generator.class_indices, key=generator.class_indices.get)

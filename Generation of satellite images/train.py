@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import json
 import random
+import os
 from dataclasses import dataclass
 import hashlib
 import platform
@@ -73,6 +74,7 @@ def split_cities(pairs, val_fraction, seed, test_fraction=0.2):
 def validate_distinct_cities(pairs):
     """Reject exact decoded duplicates across cities; not a near-duplicate check."""
     seen = {}
+    fingerprints = {}
     for city, paths in pairs.items():
         for path in paths:
             with Image.open(path) as image:
@@ -81,6 +83,8 @@ def validate_distinct_cities(pairs):
             if digest in seen and seen[digest] != city:
                 raise ValueError("Identical image pixels assigned to different cities.")
             seen[digest] = city
+            fingerprints[path.name] = digest
+    return fingerprints
 
 
 def build_tiles(pairs: dict[str, tuple[Path, Path]], rows: int, cols: int) -> list[Tile]:
@@ -148,9 +152,14 @@ def evaluate(
     pixel_count = 0
     for summer, winter in loader:
         prediction = model(summer.to(device))
-        delta = prediction - winter.to(device)
-        sum_abs += delta.abs().sum().item()
-        sum_sq += delta.square().sum().item()
+        target = winter.to(device)
+        if prediction.shape != target.shape or not torch.isfinite(prediction).all() or not torch.isfinite(target).all():
+            raise ValueError("Prediction and target must have equal shapes and finite pixels.")
+        if ((prediction < 0) | (prediction > 1)).any() or ((target < 0) | (target > 1)).any():
+            raise ValueError("Metrics require RGB pixels in [0, 1].")
+        delta = prediction - target
+        sum_abs += delta.abs().sum(dtype=torch.float64).item()
+        sum_sq += delta.double().square().sum().item()
         pixel_count += delta.numel()
     if not pixel_count:
         raise ValueError("Empty validation loader.")
@@ -165,6 +174,40 @@ def save_example(model: nn.Module, dataset: SeasonalTiles, device: torch.device,
     # Three frames: input season / target season / predicted target.
     panel = torch.cat((summer, winter, prediction), dim=2).clamp(0, 1)
     TF.to_pil_image(panel).save(output)
+
+
+def evaluate_checkpoint(data_dir: Path, run_dir: Path):
+    """Evaluate saved weights and split without training or downloading weights."""
+    output = run_dir / "test_metrics.json"
+    report = json.loads((run_dir / "metrics.json").read_text())
+    if output.exists() or report.get("test") is not None:
+        raise ValueError("This run already has test results.")
+    config = json.loads((run_dir / "config.json").read_text())
+    split = json.loads((run_dir / "split.json").read_text())
+    expected = json.loads((run_dir / "data_fingerprints.json").read_text())
+    pairs = pair_cities(data_dir)
+    if validate_distinct_cities(pairs) != expected:
+        raise ValueError("Dataset pixels or filenames differ from the training run.")
+    groups = [set(split[key]) for key in ("train", "validation", "test")]
+    if any(not group for group in groups) or set.union(*groups) != set(pairs) or sum(map(len, groups)) != len(pairs):
+        raise ValueError("Saved city split is incomplete or overlapping.")
+    if config["direction"] == "winter-to-summer":
+        pairs = {city: (winter, summer) for city, (summer, winter) in pairs.items()}
+    test_pairs = {city: pairs[city] for city in split["test"]}
+    data = SeasonalTiles(build_tiles(test_pairs, config["rows"], config["cols"]), config["image_size"])
+    loader = DataLoader(data, batch_size=config["batch_size"], shuffle=False, num_workers=0)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    checkpoint = torch.load(run_dir / "best_model.pt", map_location=device, weights_only=True)
+    if checkpoint["config"] != config:
+        raise ValueError("Checkpoint and configuration do not match.")
+    model = SeasonalTranslator(pretrained=False).to(device)
+    model.load_state_dict(checkpoint["state_dict"])
+    mae, mse = evaluate(model, loader, device)
+    base_mae, base_mse = evaluate(nn.Identity().to(device), loader, device)
+    result = {"mae": mae, "mse": mse, "identity_mae": base_mae, "identity_mse": base_mse,
+              "cities": split["test"], "tiles": len(data), "checkpoint_epoch": checkpoint["metrics"]["epoch"]}
+    output.write_text(json.dumps(result, indent=2, allow_nan=False))
+    return result
 
 
 def main(argv=None) -> None:
@@ -183,7 +226,13 @@ def main(argv=None) -> None:
     parser.add_argument("--test-fraction", type=float, default=.2)
     parser.add_argument("--direction", choices=["summer-to-winter", "winter-to-summer"], default="summer-to-winter")
     parser.add_argument("--evaluate-test", action="store_true", help="Evaluate held-out cities only after fixing the experiment design")
+    parser.add_argument("--evaluate-only", action="store_true", help="Evaluate best_model.pt using the saved configuration and city split")
     args = parser.parse_args(argv)
+    os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+    if args.evaluate_only:
+        torch.use_deterministic_algorithms(True)
+        evaluate_checkpoint(args.data_dir, args.output_dir)
+        return
 
     if args.epochs < 1 or args.batch_size < 1 or args.image_size < 64 or args.image_size % 32 or not np.isfinite(args.lr) or args.lr <= 0:
         parser.error("epochs and batch-size must be positive, image-size must be a multiple of 32 and >= 64; lr must be positive")
@@ -200,7 +249,9 @@ def main(argv=None) -> None:
     torch.backends.cudnn.deterministic = True
     torch.use_deterministic_algorithms(True)
     pairs = pair_cities(args.data_dir)
-    validate_distinct_cities(pairs)
+    fingerprints = validate_distinct_cities(pairs)
+    # Reject malformed held-out pairs before training.
+    build_tiles(pairs, args.rows, args.cols)
     if args.direction == "winter-to-summer":
         pairs = {c: (winter, summer) for c, (summer, winter) in pairs.items()}
     train_pairs, val_pairs, test_pairs = split_cities(pairs, args.val_fraction, args.seed, args.test_fraction)
@@ -208,6 +259,7 @@ def main(argv=None) -> None:
     split_report = {"train": sorted(train_pairs), "validation": sorted(val_pairs), "test": sorted(test_pairs)}
     (args.output_dir / "config.json").write_text(json.dumps(config, indent=2))
     (args.output_dir / "split.json").write_text(json.dumps(split_report, indent=2))
+    (args.output_dir / "data_fingerprints.json").write_text(json.dumps(fingerprints, indent=2))
     environment = {"python": platform.python_version(), "torch": torch.__version__, "numpy": np.__version__, "smp": smp.__version__}
     (args.output_dir / "environment.json").write_text(json.dumps(environment, indent=2))
     train_data = SeasonalTiles(build_tiles(train_pairs, args.rows, args.cols), args.image_size)
@@ -233,6 +285,8 @@ def main(argv=None) -> None:
             optimizer.zero_grad(set_to_none=True)
             prediction = model(summer)
             loss = criterion(prediction, winter)
+            if not torch.isfinite(loss):
+                raise ValueError("Non-finite training loss.")
             loss.backward()
             optimizer.step()
             loss_sum += loss.item() * summer.size(0)
@@ -266,7 +320,7 @@ def main(argv=None) -> None:
               "history": history, "best_val_mse": best_mse, "test_cities": sorted(test_pairs),
               "note": "MAE/MSE computed on paired target-season images from held-out cities; not a perceptual metric."}
     (args.output_dir / "metrics.json").write_text(
-        json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
+        json.dumps(report, ensure_ascii=False, indent=2, allow_nan=False), encoding="utf-8"
     )
 
 

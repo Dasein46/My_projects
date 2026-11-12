@@ -13,3 +13,9 @@ artifacts/
 *.pt
 *.pth
 *.pkl
+
+# Local medical metadata
+manifest.csv
+split_manifest.csv
+train_df.csv
+image_label.csv
