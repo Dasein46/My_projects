@@ -42,4 +42,4 @@ macro/weighted averages и матрица ошибок. Графики стро�
 5. Сохранённые best_model.keras, classes.json, history.json, split_manifest.csv и
    test_metrics.json остаются локально. Инференс использует то же преобразование RGB.
 
-Подробности исправлений — [AUDIT.md](../AUDIT.md), выполненные проверки — [VALIDATION.md](../VALIDATION.md).
+Методология — [METHODOLOGY.md](../METHODOLOGY.md), выполненные проверки — [VALIDATION.md](../VALIDATION.md).
