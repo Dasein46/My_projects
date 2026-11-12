@@ -1,43 +1,47 @@
-# Модель классификации частей тела на снимках
-___
-##### сылка на датасет 💿
-https://www.kaggle.com/datasets/chenghanpu/brain-tumor-mri-and-ct-scan
-https://www.kaggle.com/datasets/mateuszbuda/lgg-mri-segmentation
-https://www.kaggle.com/datasets/mohamedhanyyy/chest-ctscan-images
-https://www.kaggle.com/code/polomarco/chest-ct-segmentation-lung-heart-trachea
-https://www.kaggle.com/datasets/dryari5/shoulder-xray-classification
-https://www.kaggle.com/datasets/antonbudnychuk/hand-xray
-https://www.kaggle.com/datasets/shashwatwork/knee-osteoarthritis-dataset-with-severity
-##### сылка на модели 💿
-https://drive.google.com/file/d/12hZFqfQVril3FjR6ZByHKGZ8ERM4s31X/view?usp=drive_link
-##### dict обозначение данных на вход 🔽
-- https://drive.google.com/drive/folders/1VJjYoUftSS_p2OlujqIhNgldi5Bpsv7k?usp=drive_link: путь до изображения снимка плеча x-ray;
-- https://drive.google.com/drive/folders/13JMCGEmC98prbBTb2lsa9M_k-E6j5bP4?usp=drive_link: путь до изображения снимка колена x-ray;
-- https://drive.google.com/drive/folders/1ZZvih-UTAk9p3OYVxbnhDitJiK24jVJZ?usp=drive_link: путь до изображения снимка головы x-ray;
-- https://drive.google.com/drive/folders/1Ruy3-7buJl6L6sbsio-IHLInRS_zlg-Y?usp=drive_link: путь до изображения снимка руки x-ray;
-- https://drive.google.com/drive/folders/1_nm-WVvAazAIPLKe3gRa8R3BG_XMOnuz?usp=drive_link: путь до изображения снимка грудной клетки x-ray.
+# Классификация областей тела на рентгеновских снимках
 
-##### dict обозначение данных на выход 🔼
-- Filename: Predictions
+[← Обзор](../README.md) · [Ноутбук](Classification_of_body_parts_in_X_Rays.ipynb)
 
-##### образец данных на вход и выход 🔃
-* вход: [матрица изображения RGB] | shape : (5709, 128, 128, 3)
-* выход: [[0.20, 0.70, 0.02, 0.05, 0.03]] | shape : (5709, 3)
+## Задача и данные
 
-##### метрики 📈
+Классификация изображений 224×224 RGB. Классы: `head, chest, hand, shoulder, knee`.
+Источники из исходного проекта (доступность, лицензии и полнота выгрузки не подтверждены):
 
-- acc : 0.9894. порог: 0.6455790400505066. модель: нейронная модель с 7 слоями.
+- https://www.kaggle.com/datasets/dryari5/shoulder-xray-classification
+- https://www.kaggle.com/datasets/antonbudnychuk/hand-xray
+- https://www.kaggle.com/datasets/shashwatwork/knee-osteoarthritis-dataset-with-severity
 
-##### матрица ошибок 🔢
-| TP | FN |
-|------|------|
-| FP | TN |
+В старом README также перечислялись CT/MRI-наборы. Их связь с пятью рентгеновскими классами не установлена; чистоту модальности и источник каждого класса нужно проверить.
 
-##### Значение фаилов 📄
-* classification_of_body_parts_in_X_Rays.ipynb : создание модели
-* my_model.h5 : модель классификации
+## Модель и метод
 
+Два блока Conv2D/MaxPooling2D → Flatten → Dense(64) → softmax(5).
+Python, TensorFlow/Keras, pandas, NumPy, PIL, scikit-learn, Matplotlib.
+Adam, categorical crossentropy, выбор лучшей эпохи по validation loss.
+Обучение учитывает все батчи. Validation/test не аугментируются.
+Для VGG16 применяется штатная preprocess_input; для CNN — деление пикселей на 255.
 
-___
-### Заметки ✏️
-ваши коментарии
+Данные разделяются по patient_id; точные пиксельные дубли блокируют запуск.
+Test отделён от выбора модели. Вычисляются precision/recall/F1/support по классам,
+macro/weighted averages и матрица ошибок. Графики строятся только из нового history.
+
+## Результаты и ограничения
+
+Исторический запуск: 5 709 изображений, train 4 568 / validation 1 141; последняя val_accuracy 0,9894, val_loss 0,0464 за 3 эпохи. Это исходный split по снимкам, не независимый тест.
+
+**Новые метрики не получены:** необходимы исходные изображения и проверенные идентификаторы
+пациентов. Изменённая предобработка и split требуют повторного обучения. Высокая accuracy
+не доказывает переносимость на другие учреждения, аппараты и источники. Риск распознавания
+источника вместо анатомии сохраняется при смешении датасетов. Близкие дубли не выявляются
+точным хешированием. Клиническая применимость не проверялась.
+
+## Воспроизведение
+
+1. Установите `../requirements-keras.txt` по [общей инструкции](../README.md).
+2. Подготовьте DATA_ROOT и CSV `filename,label,patient_id[,split]` с относительными путями.
+3. Задайте MANIFEST_PATH и отдельный OUTPUT_DIR. Запустите ячейки сверху вниз.
+4. Проверьте распределение классов по split; не подбирайте разбиение по test-результату.
+5. Сохранённые best_model.keras, classes.json, history.json, split_manifest.csv и
+   test_metrics.json остаются локально. Инференс использует то же преобразование RGB.
+
+Подробности исправлений — [AUDIT.md](../AUDIT.md), выполненные проверки — [VALIDATION.md](../VALIDATION.md).
